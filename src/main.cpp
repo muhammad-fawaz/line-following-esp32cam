@@ -1,17 +1,18 @@
 #include <Arduino.h>
 #include "eloquent_esp32cam.h"
 
+using eloq::camera;
+
 // Defining Variables
+int width;
+int height;
+int offset;
 int dynamicThreshold;
-uint16_t thresholdSum;
-uint16_t width;
-uint16_t height;
 
 int targetRow = 90;
 
-using eloq::camera;
-
 int calculate_Threshold(uint8_t* buffer, int totalPixels);
+int calculate_Offset(uint8_t* pixelBuffer, int dynamicThreshold);
 
 void setup() {
 
@@ -32,13 +33,14 @@ void setup() {
   
   width = camera.resolution.getWidth();
   height = camera.resolution.getHeight();
-  Serial.printf("Width: %d, Height: %d\n", width, height);
-
+  
+  Serial.printf("Initialized with Width: %d, Height: %d\n", width, height);
+  
 }
 
 
 void loop() {
-
+  
   while (!camera.capture().isOk()) {
     Serial.println("Failed to Capture Frame: ");
     delay(2000);
@@ -46,14 +48,23 @@ void loop() {
   
   uint8_t* pixelBuffer = camera.frame->buf;
   int totalPixels = width * height;
-  
+
   dynamicThreshold = calculate_Threshold(pixelBuffer, totalPixels);
+  offset = calculate_Offset(pixelBuffer, dynamicThreshold);
+
+  Serial.printf("Offset Value: %d\n", offset);
+  
+  camera.free();    
+  delay(20); 
+}
+
+
+int calculate_Offset(uint8_t* pixelBuffer, int dynamicThreshold) {
   
   long sumPositions = 0;
   int whitePixelCount = 0;
   int startIndex = targetRow * width;
-  
-  // 2. Loop across the single horizontal row
+
   for (int x = 0; x < width; x++) {
     int pixelIndex = (startIndex) + x;
     uint8_t pixelValue = pixelBuffer[pixelIndex];
@@ -65,33 +76,27 @@ void loop() {
   }
 
   if (whitePixelCount > 0) {
-
-    int line_centroid_x = sumPositions / whitePixelCount;    //problem here. always 79    
+    int line_centroid_x = sumPositions / whitePixelCount;
     int camera_midpoint_x = width / 2; 
     
     int alignment_offset = line_centroid_x - camera_midpoint_x;
-
-    Serial.printf("Line Centroid X: %d  | Offset from Middle: %d \n", line_centroid_x, alignment_offset);
-    delay(20);
-    
-  } else {
-    Serial.println("Line Lost! [Error 999]");
+    return alignment_offset; 
   }
 
-  camera.free();    
-  delay(20); 
+  return 0;
+
 }
 
 
 int calculate_Threshold(uint8_t* buffer, int totalPixels) {
   long thresholdSum = 0;
-
+  
   for (int i = 0; i < totalPixels; i++) {
     thresholdSum += buffer[i];
   }
-
+  
   int frameAverage = thresholdSum / totalPixels;
   int calculatedThreshold = frameAverage;
-
+  
   return calculatedThreshold;
 }
