@@ -1,4 +1,6 @@
+#include <Wire.h>
 #include <Arduino.h>
+#include <VL53L0X.h>
 #include "eloquent_esp32cam.h"
 
 using eloq::camera;
@@ -12,12 +14,11 @@ int targetRow[] = {10, 90, 110};
 
 // TODO
 //PID variables
-float kp_pos = 0;
-float kp_ang = 0;
-float ki = 0;
-float kd = 0;
+float kp_pos = 1.2;
+float kp_ang = 5.0;
+float ki = 0.1;
+float kd = 0.3;
 
-float e = 0;
 float errorIntegral = 0;
 float errorDerivative = 0;
 float currentError = 0;
@@ -27,7 +28,8 @@ float lastError = 0;
 // Function Definitions
 int calculate_Threshold(uint8_t* buffer, int totalPixels);
 int calculate_positionOffset(uint8_t* pixelBuffer, int dynamicThreshold, int targetRow);
-int calculate_AngleOffset(uint8_t* pixelBuffer, int dynamicThreshold);
+float calculate_AngleOffset(uint8_t* pixelBuffer, int dynamicThreshold);
+
 void turn_motors(float error);
 float run_obstacle_detection();
 void run_obstacle_maneuver();
@@ -89,7 +91,6 @@ void loop() {
   // Logging results for debugging - remove this at the end
   Serial.printf("PosErr: %d | AngErr: %.1f | TurnOut: %.1f\n", offsetPosition, offsetAngle, e);  
   camera.free();    
-  delay(20); 
 }
 
 
@@ -125,16 +126,16 @@ int calculate_positionOffset(uint8_t* pixelBuffer, int dynamicThreshold, int tar
 
 
 // Angle offset from center used to control PID algorithm
-int calculate_AngleOffset(uint8_t* pixelBuffer, int dynamicThreshold) {
-
-  int top_YOffset = targetRow[1] - targetRow[0];
-  int bottom_YOffset = targetRow[2] = targetRow[1];
-
+float calculate_AngleOffset(uint8_t* pixelBuffer, int dynamicThreshold) {
+  
   int top_XOffset = calculate_positionOffset(pixelBuffer, dynamicThreshold, targetRow[0]);
   int bottom_XOffset = calculate_positionOffset(pixelBuffer, dynamicThreshold, targetRow[2]);
+  
+  int  dy = targetRow[2] - targetRow[0];
+  int dx = top_XOffset - bottom_XOffset;
 
-  //angle = dY / dX
-  int angle = (top_YOffset + bottom_YOffset) / (top_XOffset + bottom_XOffset);
+  float angle = atan2(dy, dx);
+  
   return angle;
 }
 
@@ -165,7 +166,7 @@ void turn_motors(float error) {
 //TODO
 // Detect objects in frint of robot
 float run_obstacle_detection() {
-  return;
+  return 0.0;
 }
 
 //TODO
