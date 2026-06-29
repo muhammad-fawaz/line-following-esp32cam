@@ -5,6 +5,13 @@
 
 using eloq::camera;
 
+// Pin Definitions
+#define SDA 14
+#define SCL 15
+
+// Class Definitions
+VL53L0X tofSensor;
+
 // Vision Variables
 int width;
 int height;
@@ -13,7 +20,7 @@ int dynamicThreshold;
 int targetRow[] = {10, 90, 110};
 
 // TODO
-//PID variables
+//PID variables (filled with dummy variables)
 float kp_pos = 1.2;
 float kp_ang = 5.0;
 float ki = 0.1;
@@ -46,17 +53,27 @@ void setup() {
   camera.resolution.qqvga(); //160x120 resolution
   camera.pixformat.grayscale();
   
+  Wire.begin(SDA, SCL);
+
   while (!camera.begin().isOk()) {
     Serial.println("Camera Initialization Failed: ");
     delay(2000);
   }
   Serial.println("Camera Initialization Successful: ");
-  
+
   width = camera.resolution.getWidth();
   height = camera.resolution.getHeight();
+
+  tofSensor.setTimeout(500);
+  if (!tofSensor.init()) {
+    Serial.println("Failed to detect or initialize VL53L0X ToF sensor!");
+    while (1);
+  }
+  Serial.println("VL53L0X ToF Sensor Initialized Successfully.");
+
+  tofSensor.startContinuous();
   
   Serial.printf("Initialized with Width: %d, Height: %d\n", width, height);
-  
 }
 
 
@@ -77,6 +94,9 @@ void loop() {
   int offsetPosition = calculate_positionOffset(pixelBuffer, dynamicThreshold, targetRow[1]);
   float offsetAngle = calculate_AngleOffset(pixelBuffer, dynamicThreshold);
 
+  
+  float distance_to_object = run_obstacle_detection();
+
   // PID
   currentError = offsetPosition*kp_pos + offsetAngle*kp_ang;
 
@@ -84,12 +104,13 @@ void loop() {
   errorDerivative = currentError - lastError;
 
   float e = currentError + (errorIntegral*ki) + (errorDerivative*kd);
-  turn_motors(e);
+  // turn_motors(e);
 
   lastError = currentError;
 
   // Logging results for debugging - remove this at the end
   Serial.printf("PosErr: %d | AngErr: %.1f | TurnOut: %.1f\n", offsetPosition, offsetAngle, e);  
+  Serial.printf("dist: %f\n", distance_to_object);  
   camera.free();    
 }
 
@@ -134,7 +155,7 @@ float calculate_AngleOffset(uint8_t* pixelBuffer, int dynamicThreshold) {
   int  dy = targetRow[2] - targetRow[0];
   int dx = top_XOffset - bottom_XOffset;
 
-  float angle = atan2(dy, dx);
+  float angle = atan2(dx, dy);
   
   return angle;
 }
@@ -166,7 +187,14 @@ void turn_motors(float error) {
 //TODO
 // Detect objects in frint of robot
 float run_obstacle_detection() {
-  return 0.0;
+
+  uint16_t distance = tofSensor.readRangeContinuousMillimeters();
+
+  if (tofSensor.timeoutOccurred()) {
+    Serial.println(" ToF Sensor Timeout!");
+    return -1.0;
+  }
+  return (float)distance;
 }
 
 //TODO
