@@ -9,8 +9,22 @@ using eloq::camera;
 #define SDA 14
 #define SCL 15
 
+#define IN1 12
+#define IN2 13
+#define IN3 32
+#define IN4 33
+#define ENA 999
+#define ENB 999
+
+#define LEFT_ENCODER_A 36
+#define LEFT_ENCODER_B 999
+#define RIGHT_ENCODER_A 39
+#define RIGHT_ENCODER_B 999
+
+
 // Class Definitions
 VL53L0X tofSensor;
+
 
 // Vision Variables
 int width;
@@ -31,15 +45,26 @@ float errorDerivative = 0;
 float currentError = 0;
 float lastError = 0;
 
+// Motor variables
+int BASE_SPEED = 150;
+volatile long leftTicks = 0;
+volatile long rightTicks = 0;
+
 
 // Function Definitions
-int calculate_Threshold(uint8_t* buffer, int totalPixels);
-int calculate_positionOffset(uint8_t* pixelBuffer, int dynamicThreshold, int targetRow);
-float calculate_AngleOffset(uint8_t* pixelBuffer, int dynamicThreshold);
+void initialize();
+int calculateThreshold(uint8_t* buffer, int totalPixels);
+int calculatePositionOffset(uint8_t* pixelBuffer, int dynamicThreshold, int targetRow);
+float calculateAngleOffset(uint8_t* pixelBuffer, int dynamicThreshold);
 
-void turn_motors(float error);
-float run_obstacle_detection();
-void run_obstacle_maneuver();
+void turnMotors(float error);
+void stopMotors();
+void getEncoderData();
+void readLeftEncoder();
+void readRightEncoder();
+
+float runObstacleDetection();
+void rExecuteObstacleManeuver();
 
 
 void setup() {
@@ -55,23 +80,24 @@ void setup() {
   
   Wire.begin(SDA, SCL);
 
-  while (!camera.begin().isOk()) {
-    Serial.println("Camera Initialization Failed: ");
-    delay(2000);
-  }
-  Serial.println("Camera Initialization Successful: ");
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+  // pinMode(ENA, OUTPUT);
+  // pinMode(ENB, OUTPUT);
+  
+  pinMode(LEFT_ENCODER_A, INPUT_PULLUP);
+  pinMode(LEFT_ENCODER_B, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(LEFT_ENCODER_A), readLeftEncoder, RISING);
+  
+  pinMode(RIGHT_ENCODER_A, INPUT_PULLUP);
+  pinMode(RIGHT_ENCODER_B, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(RIGHT_ENCODER_A), readRightEncoder, RISING);
 
-  width = camera.resolution.getWidth();
-  height = camera.resolution.getHeight();
+  
+  initialize();
 
-  tofSensor.setTimeout(500);
-  if (!tofSensor.init()) {
-    Serial.println("Failed to detect or initialize VL53L0X ToF sensor!");
-    while (1);
-  }
-  Serial.println("VL53L0X ToF Sensor Initialized Successfully.");
-
-  tofSensor.startContinuous();
   
   Serial.printf("Initialized with Width: %d, Height: %d\n", width, height);
 }
@@ -89,13 +115,14 @@ void loop() {
   int totalPixels = width * height;
 
   // Calculating threshold value to dynamically classify black and white
-  dynamicThreshold = calculate_Threshold(pixelBuffer, totalPixels);
+  dynamicThreshold = calculateThreshold(pixelBuffer, totalPixels);
   
-  int offsetPosition = calculate_positionOffset(pixelBuffer, dynamicThreshold, targetRow[1]);
-  float offsetAngle = calculate_AngleOffset(pixelBuffer, dynamicThreshold);
+  int offsetPosition = calculatePositionOffset(pixelBuffer, dynamicThreshold, targetRow[1]);
+  float offsetAngle = calculateAngleOffset(pixelBuffer, dynamicThreshold);
 
   
-  float distance_to_object = run_obstacle_detection();
+  // float distance_to_object = runObstacleDetection();
+  // if (distance_to_object <= 10) executeObstacleManeuver();
 
   // PID
   currentError = offsetPosition*kp_pos + offsetAngle*kp_ang;
@@ -104,35 +131,60 @@ void loop() {
   errorDerivative = currentError - lastError;
 
   float e = currentError + (errorIntegral*ki) + (errorDerivative*kd);
-  // turn_motors(e);
+  turnMotors(e);
 
   lastError = currentError;
 
   // Logging results for debugging - remove this at the end
-  Serial.printf("PosErr: %d | AngErr: %.1f | TurnOut: %.1f\n", offsetPosition, offsetAngle, e);  
-  Serial.printf("dist: %f\n", distance_to_object);  
-  camera.free();    
+  // Serial.printf("PosErr: %d | AngErr: %.1f | TurnOut: %.1f\n", offsetPosition, offsetAngle, e);  
+  // Serial.printf("dist: %f\n", distance_to_object);  
+
+  Serial.printf("Error: %f\n", e);
+  camera.free();
+  delay(500);
+  
+}
+
+
+void initialize() {
+while (!camera.begin().isOk()) {
+    Serial.println("Camera Initialization Failed: ");
+    delay(2000);
+  }
+  Serial.println("Camera Initialization Successful: ");
+
+  width = camera.resolution.getWidth();
+  height = camera.resolution.getHeight();
+
+  tofSensor.setTimeout(500);
+  if (!tofSensor.init()) {
+    Serial.println("Failed to detect or initialize VL53L0X ToF sensor!");
+    // while (1);
+  }
+  Serial.println("VL53L0X ToF Sensor Initialized Successfully.");
+
+  tofSensor.startContinuous();
 }
 
 
 // Check if line is off-centered from middle of the frame
-int calculate_positionOffset(uint8_t* pixelBuffer, int dynamicThreshold, int targetRow) {
+int calculatePositionOffset(uint8_t* pixelBuffer, int dynamicThreshold, int targetRow) {
   
   long sumPositions = 0;
   int whitePixelCount = 0;
   int startIndex = targetRow * width;
-
+  
   // Count how many pixels are white and get their position
   for (int x = 0; x < width; x++) {
     int pixelIndex = (startIndex) + x;
     uint8_t pixelValue = pixelBuffer[pixelIndex];
-  
+    
     if (pixelValue > dynamicThreshold) {
       sumPositions += x;
       whitePixelCount++;
     }
   }
-
+  
   // Get average position of white pixels
   if (whitePixelCount > 0) {
     int line_centroid_x = sumPositions / whitePixelCount;
@@ -141,20 +193,20 @@ int calculate_positionOffset(uint8_t* pixelBuffer, int dynamicThreshold, int tar
     int alignment_offset = line_centroid_x - camera_midpoint_x;
     return alignment_offset; 
   }
-
+  
   return 0;
 }
 
 
 // Angle offset from center used to control PID algorithm
-float calculate_AngleOffset(uint8_t* pixelBuffer, int dynamicThreshold) {
+float calculateAngleOffset(uint8_t* pixelBuffer, int dynamicThreshold) {
   
-  int top_XOffset = calculate_positionOffset(pixelBuffer, dynamicThreshold, targetRow[0]);
-  int bottom_XOffset = calculate_positionOffset(pixelBuffer, dynamicThreshold, targetRow[2]);
+  int top_XOffset = calculatePositionOffset(pixelBuffer, dynamicThreshold, targetRow[0]);
+  int bottom_XOffset = calculatePositionOffset(pixelBuffer, dynamicThreshold, targetRow[2]);
   
   int  dy = targetRow[2] - targetRow[0];
   int dx = top_XOffset - bottom_XOffset;
-
+  
   float angle = atan2(dx, dy);
   
   return angle;
@@ -162,8 +214,8 @@ float calculate_AngleOffset(uint8_t* pixelBuffer, int dynamicThreshold) {
 
 
 // Instead of statically defining the threshold once, define it as the average of all pixels on frame
-int calculate_Threshold(uint8_t* pixelBuffer, int totalPixels) {
-
+int calculateThreshold(uint8_t* pixelBuffer, int totalPixels) {
+  
   long thresholdSum = 0;
   
   for (int i = 0; i < totalPixels; i++) {
@@ -177,16 +229,86 @@ int calculate_Threshold(uint8_t* pixelBuffer, int totalPixels) {
 }
 
 
-//TODO
 // Motor control algorithm based off of PID
-void turn_motors(float error) {
-  return;
+void turnMotors(float error) {
+
+  int left_speed = BASE_SPEED + error;
+  int right_speed = BASE_SPEED - error;
+  
+  left_speed = constrain(left_speed, -255, 255);
+  right_speed = constrain(right_speed, -255, 255);
+  
+  // Left motor forward
+  if (left_speed >= 0) {
+    Serial.printf("Left motor forward\n");
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+    analogWrite(ENA, left_speed);
+    
+    // Left motor backward
+  } else {
+    Serial.printf("Left motor backward\n");
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+    analogWrite(ENA, abs(left_speed));
+  }
+  
+  // Right motor forward
+  if (right_speed >= 0) {
+    Serial.printf("right motor forward\n");
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);
+    analogWrite(ENB, right_speed);
+    
+    // Right motor backward
+  } else {
+    Serial.printf("right motor backward\n");
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, HIGH);
+    analogWrite(ENB, abs(right_speed));
+  }
+
 }
 
 
-//TODO
-// Detect objects in frint of robot
-float run_obstacle_detection() {
+// Breaks
+void stopMotors() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+  
+  analogWrite(ENA, 0);
+  analogWrite(ENB, 0);
+}
+
+
+void getEncoderData() {
+
+}
+
+
+void readLeftEncoder() {
+  int bState = digitalRead(LEFT_ENCODER_B);
+  if (bState == LOW) {
+    leftTicks++;
+  } else {
+    leftTicks--;
+  }
+}
+
+void readRightEncoder() {
+  int bState = digitalRead(RIGHT_ENCODER_B);
+  if (bState == LOW) {
+    rightTicks++;
+  } else {
+    rightTicks--;
+  }
+}
+
+
+// Detect objects in front of robot
+float runObstacleDetection() {
 
   uint16_t distance = tofSensor.readRangeContinuousMillimeters();
 
@@ -201,6 +323,6 @@ float run_obstacle_detection() {
 // It is a hassle to make complex code for this,
 // Make a predefined block of code that makes the robot go clckwise around a circle
 // avoiding  the obstacle (initial idea)
-void run_obstacle_maneuver() {
+void executeObstacleManeuver() {
   return;
 }
