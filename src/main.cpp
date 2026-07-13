@@ -1,6 +1,6 @@
 #include <Wire.h>
 #include <Arduino.h>
-#include <VL53L0X.h>
+#include <VL53L1X.h>
 #include "eloquent_esp32cam.h"
 
 using eloq::camera;
@@ -9,21 +9,14 @@ using eloq::camera;
 #define SDA 14
 #define SCL 15
 
-#define IN1 12
-#define IN2 13
+#define IN1 18
+#define IN2 19
 #define IN3 32
 #define IN4 33
-#define ENA 999
-#define ENB 999
-
-#define LEFT_ENCODER_A 36
-#define LEFT_ENCODER_B 999
-#define RIGHT_ENCODER_A 39
-#define RIGHT_ENCODER_B 999
 
 
 // Class Definitions
-VL53L0X tofSensor;
+VL53L1X tofSensor;
 
 
 // Vision Variables
@@ -47,8 +40,6 @@ float lastError = 0;
 
 // Motor variables
 int BASE_SPEED = 150;
-volatile long leftTicks = 0;
-volatile long rightTicks = 0;
 
 
 // Function Definitions
@@ -64,7 +55,7 @@ void readLeftEncoder();
 void readRightEncoder();
 
 float runObstacleDetection();
-void rExecuteObstacleManeuver();
+void executeObstacleManeuver();
 
 
 void setup() {
@@ -84,17 +75,6 @@ void setup() {
   pinMode(IN2, OUTPUT);
   pinMode(IN3, OUTPUT);
   pinMode(IN4, OUTPUT);
-  // pinMode(ENA, OUTPUT);
-  // pinMode(ENB, OUTPUT);
-  
-  pinMode(LEFT_ENCODER_A, INPUT_PULLUP);
-  pinMode(LEFT_ENCODER_B, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(LEFT_ENCODER_A), readLeftEncoder, RISING);
-  
-  pinMode(RIGHT_ENCODER_A, INPUT_PULLUP);
-  pinMode(RIGHT_ENCODER_B, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(RIGHT_ENCODER_A), readRightEncoder, RISING);
-
   
   initialize();
 
@@ -121,10 +101,10 @@ void loop() {
   float offsetAngle = calculateAngleOffset(pixelBuffer, dynamicThreshold);
 
   
-  // float distance_to_object = runObstacleDetection();
+  float distance_to_object = runObstacleDetection();
   // if (distance_to_object <= 10) executeObstacleManeuver();
 
-  // PID
+  // // PID
   currentError = offsetPosition*kp_pos + offsetAngle*kp_ang;
 
   errorIntegral += currentError;
@@ -135,10 +115,9 @@ void loop() {
 
   lastError = currentError;
 
-  // Logging results for debugging - remove this at the end
+  // // Logging results for debugging - remove this at the end
   // Serial.printf("PosErr: %d | AngErr: %.1f | TurnOut: %.1f\n", offsetPosition, offsetAngle, e);  
-  // Serial.printf("dist: %f\n", distance_to_object);  
-
+  Serial.printf("dist: %f\n", distance_to_object);  
   Serial.printf("Error: %f\n", e);
   camera.free();
   delay(500);
@@ -159,11 +138,11 @@ while (!camera.begin().isOk()) {
   tofSensor.setTimeout(500);
   if (!tofSensor.init()) {
     Serial.println("Failed to detect or initialize VL53L0X ToF sensor!");
-    // while (1);
+    while (1);
   }
   Serial.println("VL53L0X ToF Sensor Initialized Successfully.");
 
-  tofSensor.startContinuous();
+  tofSensor.startContinuous(50);
 }
 
 
@@ -243,14 +222,14 @@ void turnMotors(float error) {
     Serial.printf("Left motor forward\n");
     digitalWrite(IN1, HIGH);
     digitalWrite(IN2, LOW);
-    analogWrite(ENA, left_speed);
+    // analogWrite(ENA, left_speed);
     
     // Left motor backward
   } else {
     Serial.printf("Left motor backward\n");
     digitalWrite(IN1, LOW);
     digitalWrite(IN2, HIGH);
-    analogWrite(ENA, abs(left_speed));
+    // analogWrite(ENA, abs(left_speed));
   }
   
   // Right motor forward
@@ -258,14 +237,14 @@ void turnMotors(float error) {
     Serial.printf("right motor forward\n");
     digitalWrite(IN3, HIGH);
     digitalWrite(IN4, LOW);
-    analogWrite(ENB, right_speed);
+    // analogWrite(ENB, right_speed);
     
     // Right motor backward
   } else {
     Serial.printf("right motor backward\n");
     digitalWrite(IN3, LOW);
     digitalWrite(IN4, HIGH);
-    analogWrite(ENB, abs(right_speed));
+    // analogWrite(ENB, abs(right_speed));
   }
 
 }
@@ -278,8 +257,8 @@ void stopMotors() {
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, LOW);
   
-  analogWrite(ENA, 0);
-  analogWrite(ENB, 0);
+  // analogWrite(ENA, 0);
+  // analogWrite(ENB, 0);
 }
 
 
@@ -288,29 +267,29 @@ void getEncoderData() {
 }
 
 
-void readLeftEncoder() {
-  int bState = digitalRead(LEFT_ENCODER_B);
-  if (bState == LOW) {
-    leftTicks++;
-  } else {
-    leftTicks--;
-  }
-}
+// void readLeftEncoder() {
+//   int bState = digitalRead(LEFT_ENCODER_B);
+//   if (bState == LOW) {
+//     leftTicks++;
+//   } else {
+//     leftTicks--;
+//   }
+// }
 
-void readRightEncoder() {
-  int bState = digitalRead(RIGHT_ENCODER_B);
-  if (bState == LOW) {
-    rightTicks++;
-  } else {
-    rightTicks--;
-  }
-}
+// void readRightEncoder() {
+//   int bState = digitalRead(RIGHT_ENCODER_B);
+//   if (bState == LOW) {
+//     rightTicks++;
+//   } else {
+//     rightTicks--;
+//   }
+// }
 
 
 // Detect objects in front of robot
 float runObstacleDetection() {
 
-  uint16_t distance = tofSensor.readRangeContinuousMillimeters();
+  uint16_t distance = tofSensor.read();
 
   if (tofSensor.timeoutOccurred()) {
     Serial.println(" ToF Sensor Timeout!");
