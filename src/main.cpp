@@ -1,23 +1,13 @@
 #include <Wire.h>
 #include <Arduino.h>
-#include <VL53L1X.h>
 #include "eloquent_esp32cam.h"
 
 using eloq::camera;
 
-// Pin Definitions
-#define SDA 14
-#define SCL 15
-
-#define IN1 18
-#define IN2 19
-#define IN3 32
-#define IN4 33
-
-
-// Class Definitions
-VL53L1X tofSensor;
-
+#define IN1 32
+#define IN2 33
+#define IN3 2
+#define IN4 12
 
 // Vision Variables
 int width;
@@ -43,19 +33,12 @@ int BASE_SPEED = 150;
 
 
 // Function Definitions
-void initialize();
 int calculateThreshold(uint8_t* buffer, int totalPixels);
 int calculatePositionOffset(uint8_t* pixelBuffer, int dynamicThreshold, int targetRow);
 float calculateAngleOffset(uint8_t* pixelBuffer, int dynamicThreshold);
 
 void turnMotors(float error);
 void stopMotors();
-void getEncoderData();
-void readLeftEncoder();
-void readRightEncoder();
-
-float runObstacleDetection();
-void executeObstacleManeuver();
 
 
 void setup() {
@@ -69,14 +52,19 @@ void setup() {
   camera.resolution.qqvga(); //160x120 resolution
   camera.pixformat.grayscale();
   
-  Wire.begin(SDA, SCL);
-
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
   pinMode(IN3, OUTPUT);
   pinMode(IN4, OUTPUT);
   
-  initialize();
+  while (!camera.begin().isOk()) {
+    Serial.println("Camera Initialization Failed: ");
+    delay(2000);
+  }
+  Serial.println("Camera Initialization Successful: ");
+
+  width = camera.resolution.getWidth();
+  height = camera.resolution.getHeight();
 
   
   Serial.printf("Initialized with Width: %d, Height: %d\n", width, height);
@@ -86,8 +74,8 @@ void setup() {
 void loop() {
   
   // Checking if camera is working
-  while (!camera.capture().isOk()) {
-    Serial.println("Failed to Capture Frame: ");
+  if (!camera.capture().isOk()) {
+    Serial.println("Failed to Capture Frame, starting without camera: ");
     delay(2000);
   }
   
@@ -99,10 +87,6 @@ void loop() {
   
   int offsetPosition = calculatePositionOffset(pixelBuffer, dynamicThreshold, targetRow[1]);
   float offsetAngle = calculateAngleOffset(pixelBuffer, dynamicThreshold);
-
-  
-  float distance_to_object = runObstacleDetection();
-  // if (distance_to_object <= 10) executeObstacleManeuver();
 
   // // PID
   currentError = offsetPosition*kp_pos + offsetAngle*kp_ang;
@@ -117,32 +101,33 @@ void loop() {
 
   // // Logging results for debugging - remove this at the end
   // Serial.printf("PosErr: %d | AngErr: %.1f | TurnOut: %.1f\n", offsetPosition, offsetAngle, e);  
-  Serial.printf("dist: %f\n", distance_to_object);  
   Serial.printf("Error: %f\n", e);
   camera.free();
+
+  Serial.println("Moving motors\n");
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+
+  delay(500);
+
+  Serial.println("Stopping motors\n");
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, HIGH);
+
+  delay(500);
+
+  Serial.println("Moving motors Backward\n");
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
+
   delay(500);
   
-}
-
-
-void initialize() {
-while (!camera.begin().isOk()) {
-    Serial.println("Camera Initialization Failed: ");
-    delay(2000);
-  }
-  Serial.println("Camera Initialization Successful: ");
-
-  width = camera.resolution.getWidth();
-  height = camera.resolution.getHeight();
-
-  tofSensor.setTimeout(500);
-  if (!tofSensor.init()) {
-    Serial.println("Failed to detect or initialize VL53L0X ToF sensor!");
-    while (1);
-  }
-  Serial.println("VL53L0X ToF Sensor Initialized Successfully.");
-
-  tofSensor.startContinuous(50);
 }
 
 
@@ -247,61 +232,15 @@ void turnMotors(float error) {
     // analogWrite(ENB, abs(right_speed));
   }
 
+  delay(500);
 }
 
 
 // Breaks
 void stopMotors() {
+
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, LOW);
-  
-  // analogWrite(ENA, 0);
-  // analogWrite(ENB, 0);
-}
-
-
-void getEncoderData() {
-
-}
-
-
-// void readLeftEncoder() {
-//   int bState = digitalRead(LEFT_ENCODER_B);
-//   if (bState == LOW) {
-//     leftTicks++;
-//   } else {
-//     leftTicks--;
-//   }
-// }
-
-// void readRightEncoder() {
-//   int bState = digitalRead(RIGHT_ENCODER_B);
-//   if (bState == LOW) {
-//     rightTicks++;
-//   } else {
-//     rightTicks--;
-//   }
-// }
-
-
-// Detect objects in front of robot
-float runObstacleDetection() {
-
-  uint16_t distance = tofSensor.read();
-
-  if (tofSensor.timeoutOccurred()) {
-    Serial.println(" ToF Sensor Timeout!");
-    return -1.0;
-  }
-  return (float)distance;
-}
-
-//TODO
-// It is a hassle to make complex code for this,
-// Make a predefined block of code that makes the robot go clckwise around a circle
-// avoiding  the obstacle (initial idea)
-void executeObstacleManeuver() {
-  return;
 }
