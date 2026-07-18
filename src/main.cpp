@@ -18,8 +18,8 @@ int targetRow[] = {10, 90, 110};
 
 // TODO
 //PID variables (filled with dummy variables)
-float kp_pos = 1.2;
-float kp_ang = 5.0;
+float kp_pos = 0.5;
+float kp_ang = 1.0;
 float ki = 0.1;
 float kd = 0.3;
 
@@ -39,6 +39,9 @@ float calculateAngleOffset(uint8_t* pixelBuffer, int dynamicThreshold);
 
 void turnMotors(float error);
 void stopMotors();
+void testMotors();
+void rotateLeft();
+void rotateRight();
 
 
 void setup() {
@@ -83,7 +86,8 @@ void loop() {
   int totalPixels = width * height;
 
   // Calculating threshold value to dynamically classify black and white
-  dynamicThreshold = calculateThreshold(pixelBuffer, totalPixels);
+  // dynamicThreshold = calculateThreshold(pixelBuffer, totalPixels);
+  dynamicThreshold = 120;
   
   int offsetPosition = calculatePositionOffset(pixelBuffer, dynamicThreshold, targetRow[1]);
   float offsetAngle = calculateAngleOffset(pixelBuffer, dynamicThreshold);
@@ -95,41 +99,60 @@ void loop() {
   errorDerivative = currentError - lastError;
 
   float e = currentError + (errorIntegral*ki) + (errorDerivative*kd);
-  turnMotors(e);
+  // turnMotors(e);
 
   lastError = currentError;
 
   // // Logging results for debugging - remove this at the end
-  // Serial.printf("PosErr: %d | AngErr: %.1f | TurnOut: %.1f\n", offsetPosition, offsetAngle, e);  
+  Serial.printf("PosErr: %d | AngErr: %.1f | TurnOut: %.1f\n", offsetPosition, offsetAngle, e);  
   Serial.printf("Error: %f\n", e);
+  Serial.printf("Threshold: %f\n", dynamicThreshold);
+  delay(200);
   camera.free();
 
-  Serial.println("Moving motors\n");
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
 
-  delay(500);
-
-  Serial.println("Stopping motors\n");
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, HIGH);
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, HIGH);
-
-  delay(500);
-
-  Serial.println("Moving motors Backward\n");
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
-
-  delay(500);
-  
 }
 
+void testMotors() {
+
+  // Serial.println("Moving motors\n");
+  // digitalWrite(IN1, HIGH);
+  // digitalWrite(IN2, LOW);
+  // digitalWrite(IN3, HIGH);
+  // digitalWrite(IN4, LOW);
+
+  // delay(500);
+
+  // Serial.println("Stopping motors\n");
+  // digitalWrite(IN1, HIGH);
+  // digitalWrite(IN2, HIGH);
+  // digitalWrite(IN3, HIGH);
+  // digitalWrite(IN4, HIGH);
+
+  // delay(500);
+
+  // Serial.println("Moving motors Backward\n");
+  // digitalWrite(IN1, LOW);
+  // digitalWrite(IN2, HIGH);
+  // digitalWrite(IN3, LOW);
+  // digitalWrite(IN4, HIGH);
+
+  // delay(500);
+}
+
+void rotateLeft() {
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
+}
+
+void rotateRight() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+}
 
 // Check if line is off-centered from middle of the frame
 int calculatePositionOffset(uint8_t* pixelBuffer, int dynamicThreshold, int targetRow) {
@@ -207,14 +230,15 @@ void turnMotors(float error) {
     Serial.printf("Left motor forward\n");
     digitalWrite(IN1, HIGH);
     digitalWrite(IN2, LOW);
-    // analogWrite(ENA, left_speed);
+    delay(100);
     
     // Left motor backward
   } else {
     Serial.printf("Left motor backward\n");
     digitalWrite(IN1, LOW);
     digitalWrite(IN2, HIGH);
-    // analogWrite(ENA, abs(left_speed));
+    delay(100);
+    
   }
   
   // Right motor forward
@@ -222,14 +246,15 @@ void turnMotors(float error) {
     Serial.printf("right motor forward\n");
     digitalWrite(IN3, HIGH);
     digitalWrite(IN4, LOW);
-    // analogWrite(ENB, right_speed);
+    delay(100);
     
     // Right motor backward
   } else {
     Serial.printf("right motor backward\n");
     digitalWrite(IN3, LOW);
     digitalWrite(IN4, HIGH);
-    // analogWrite(ENB, abs(right_speed));
+    delay(100);
+  
   }
 
   delay(500);
