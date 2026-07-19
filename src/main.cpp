@@ -1,271 +1,199 @@
-#include <Wire.h>
 #include <Arduino.h>
 #include "eloquent_esp32cam.h"
 
 using eloq::camera;
 
-#define IN1 32
-#define IN2 33
-#define IN3 2
-#define IN4 12
+// Safe Pin Map (Adjusted per your current setup)
+#define IN1 33  // Left Motor Direction
+#define IN2 32  // Left Motor Speed (PWM Channel 0)
+#define IN3 12  // Right Motor Direction
+#define IN4 2   // Right Motor Speed (PWM Channel 1)
 
-// Vision Variables
+// ESP32 PWM Channel Configurations (For older 2.x Arduino Cores)
+const int leftChannel = 0;  
+const int rightChannel = 1; 
+
+// Vision Settings
 int width;
 int height;
-int dynamicThreshold;
-
-int targetRow[] = {10, 90, 110};
-
-// TODO
-//PID variables (filled with dummy variables)
-float kp_pos = 0.5;
-float kp_ang = 1.0;
-float ki = 0.1;
-float kd = 0.3;
-
-float errorIntegral = 0;
-float errorDerivative = 0;
-float currentError = 0;
-float lastError = 0;
+int targetRow = 60;        // Scanning row across the middle of the frame
+int threshold = 120;       // Hardcoded light threshold
+int trigger_count = 3;     // Minimum white pixels to trigger a virtual sensor
+bool wasAllActive = false;
 
 // Motor variables
-int BASE_SPEED = 150;
+int BASE_SPEED = 90;       // Lowered slightly from 100 to reduce forward momentum momentum overshoots
+float lastError = 0;
+int stopCount = 0;
 
 
-// Function Definitions
-int calculateThreshold(uint8_t* buffer, int totalPixels);
-int calculatePositionOffset(uint8_t* pixelBuffer, int dynamicThreshold, int targetRow);
-float calculateAngleOffset(uint8_t* pixelBuffer, int dynamicThreshold);
-
-void turnMotors(float error);
+void turnMotors(float steering_offset);
 void stopMotors();
-void testMotors();
-void rotateLeft();
-void rotateRight();
-
 
 void setup() {
-
   Serial.begin(115200);
   delay(2000);
-  Serial.println("\n--- Starting ESP32-CAM Line-Tracking (With PID) Test ---");
+  Serial.println("\n--- Starting ESP32-CAM Paced 7-Sensor Emulation ---");
+  Serial.println(">>> KEY COMMANDS: Send 's' to START, 'q' to PAUSE/STOP <<<");
 
   camera.pinout.wrover();
   camera.brownout.disable();
-  camera.resolution.qqvga(); //160x120 resolution
+  camera.resolution.qqvga(); // 160x120 resolution
   camera.pixformat.grayscale();
   
   pinMode(IN1, OUTPUT);
-  pinMode(IN2, OUTPUT);
   pinMode(IN3, OUTPUT);
-  pinMode(IN4, OUTPUT);
   
+  ledcSetup(leftChannel, 5000, 8);
+  ledcSetup(rightChannel, 5000, 8);
+  
+  ledcAttachPin(IN2, leftChannel);
+  ledcAttachPin(IN4, rightChannel);
+
   while (!camera.begin().isOk()) {
-    Serial.println("Camera Initialization Failed: ");
+    Serial.println("Camera Initialization Failed!");
     delay(2000);
   }
-  Serial.println("Camera Initialization Successful: ");
-
+  Serial.println("Camera Initialization Successful!");
+  
   width = camera.resolution.getWidth();
   height = camera.resolution.getHeight();
 
-  
-  Serial.printf("Initialized with Width: %d, Height: %d\n", width, height);
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN3, HIGH);
 }
 
-
 void loop() {
-  
-  // Checking if camera is working
+
   if (!camera.capture().isOk()) {
-    Serial.println("Failed to Capture Frame, starting without camera: ");
-    delay(2000);
+    Serial.println("Failed to Capture Frame.");
+    return; 
   }
   
   uint8_t* pixelBuffer = camera.frame->buf;
-  int totalPixels = width * height;
-
-  // Calculating threshold value to dynamically classify black and white
-  // dynamicThreshold = calculateThreshold(pixelBuffer, totalPixels);
-  dynamicThreshold = 120;
-  
-  int offsetPosition = calculatePositionOffset(pixelBuffer, dynamicThreshold, targetRow[1]);
-  float offsetAngle = calculateAngleOffset(pixelBuffer, dynamicThreshold);
-
-  // // PID
-  currentError = offsetPosition*kp_pos + offsetAngle*kp_ang;
-
-  errorIntegral += currentError;
-  errorDerivative = currentError - lastError;
-
-  float e = currentError + (errorIntegral*ki) + (errorDerivative*kd);
-  // turnMotors(e);
-
-  lastError = currentError;
-
-  // // Logging results for debugging - remove this at the end
-  Serial.printf("PosErr: %d | AngErr: %.1f | TurnOut: %.1f\n", offsetPosition, offsetAngle, e);  
-  Serial.printf("Error: %f\n", e);
-  Serial.printf("Threshold: %f\n", dynamicThreshold);
-  delay(200);
-  camera.free();
-
-
-}
-
-void testMotors() {
-
-  // Serial.println("Moving motors\n");
-  // digitalWrite(IN1, HIGH);
-  // digitalWrite(IN2, LOW);
-  // digitalWrite(IN3, HIGH);
-  // digitalWrite(IN4, LOW);
-
-  // delay(500);
-
-  // Serial.println("Stopping motors\n");
-  // digitalWrite(IN1, HIGH);
-  // digitalWrite(IN2, HIGH);
-  // digitalWrite(IN3, HIGH);
-  // digitalWrite(IN4, HIGH);
-
-  // delay(500);
-
-  // Serial.println("Moving motors Backward\n");
-  // digitalWrite(IN1, LOW);
-  // digitalWrite(IN2, HIGH);
-  // digitalWrite(IN3, LOW);
-  // digitalWrite(IN4, HIGH);
-
-  // delay(500);
-}
-
-void rotateLeft() {
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
-}
-
-void rotateRight() {
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
-}
-
-// Check if line is off-centered from middle of the frame
-int calculatePositionOffset(uint8_t* pixelBuffer, int dynamicThreshold, int targetRow) {
-  
-  long sumPositions = 0;
-  int whitePixelCount = 0;
   int startIndex = targetRow * width;
-  
-  // Count how many pixels are white and get their position
+
+  int count_L3 = 0; 
+  int count_L2 = 0; 
+  int count_L1 = 0; 
+  int count_C  = 0; 
+  int count_R1 = 0; 
+  int count_R2 = 0; 
+  int count_R3 = 0; 
+
   for (int x = 0; x < width; x++) {
-    int pixelIndex = (startIndex) + x;
-    uint8_t pixelValue = pixelBuffer[pixelIndex];
+    uint8_t pixelValue = pixelBuffer[startIndex + x];
     
-    if (pixelValue > dynamicThreshold) {
-      sumPositions += x;
-      whitePixelCount++;
+    if (pixelValue < threshold) {
+      if (x < 23)            count_L3++;
+      else if (x < 46)       count_L2++;
+      else if (x < 69)       count_L1++;
+      else if (x < 92)       count_C++;  
+      else if (x < 115)      count_R1++;
+      else if (x < 138)      count_R2++;
+      else                   count_R3++;
     }
   }
-  
-  // Get average position of white pixels
-  if (whitePixelCount > 0) {
-    int line_centroid_x = sumPositions / whitePixelCount;
-    int camera_midpoint_x = width / 2; 
+
+  bool L3 = (count_L3 > trigger_count);
+  bool L2 = (count_L2 > trigger_count);
+  bool L1 = (count_L1 > trigger_count);
+  bool C  = (count_C  > trigger_count);
+  bool R1 = (count_R1 > trigger_count);
+  bool R2 = (count_R2 > trigger_count);
+  bool R3 = (count_R3 > trigger_count);
+
+  float steering_offset = 0;
+
+  // --- INTERSECTION & DEVIATION HANDLING TREE ---
+  if (L3 && L2 && L1 && C && R1 && R2 && R3) {
+    steering_offset = 0; 
     
-    int alignment_offset = line_centroid_x - camera_midpoint_x;
-    return alignment_offset; 
+    if (!wasAllActive) {
+      stopCount++;
+      wasAllActive = true; 
+      Serial.printf("!!! New Marker Detected! Total Count: %d !!!\n", stopCount);
+    }
+  } 
+  else {
+    wasAllActive = false; 
+
+    if (C && L1 && R1) {
+      steering_offset = 0; 
+    }
+    else if (C && !L1 && !R1) {
+      steering_offset = 0;    
+    }
+    else if (L1 && !R1) {
+      steering_offset = -15;  
+    }
+    else if (R1 && !L1) {
+      steering_offset = 15;   
+    }
+    else if (L2) {
+      steering_offset = -40;  
+    }
+    else if (R2) {
+      steering_offset = 40;   
+    }
+    else if (L3) {
+      steering_offset = -65;  // Trimmed slightly down from 90 to prevent aggressive over-turning
+    }
+    else if (R3) {
+      steering_offset = 65;   // Trimmed slightly down from 90 to prevent aggressive over-turning
+    }
+    else if (!L3 && !L2 && !L1 && !C && !R1 && !R2 && !R3) {
+      steering_offset = 0; 
+    }
+  }
+
+  // --- BRAKING RULES ---
+  if (stopCount >= 6) { 
+    stopMotors(); 
+    while(1); 
+  } else {
+    turnMotors(steering_offset);
   }
   
-  return 0;
+  lastError = steering_offset;
+  
+  Serial.printf("[ %d | %d | %d | %d | %d | %d | %d ] -> Steer: %.0f\n", L3, L2, L1, C, R1, R2, R3, steering_offset);
+                
+  camera.free();
+
+  // --- PACING DELAY ---
+  // Forces the robot to actively execute the new motor speeds for 25 milliseconds
+  // before snapping a new picture. This prevents sensor-reading lag loops.
+  delay(200); 
 }
 
-
-// Angle offset from center used to control PID algorithm
-float calculateAngleOffset(uint8_t* pixelBuffer, int dynamicThreshold) {
-  
-  int top_XOffset = calculatePositionOffset(pixelBuffer, dynamicThreshold, targetRow[0]);
-  int bottom_XOffset = calculatePositionOffset(pixelBuffer, dynamicThreshold, targetRow[2]);
-  
-  int  dy = targetRow[2] - targetRow[0];
-  int dx = top_XOffset - bottom_XOffset;
-  
-  float angle = atan2(dx, dy);
-  
-  return angle;
-}
-
-
-// Instead of statically defining the threshold once, define it as the average of all pixels on frame
-int calculateThreshold(uint8_t* pixelBuffer, int totalPixels) {
-  
-  long thresholdSum = 0;
-  
-  for (int i = 0; i < totalPixels; i++) {
-    thresholdSum += pixelBuffer[i];
-  }
-  
-  int frameAverage = thresholdSum / totalPixels;
-  int calculatedThreshold = frameAverage;
-  
-  return calculatedThreshold;
-}
-
-
-// Motor control algorithm based off of PID
-void turnMotors(float error) {
-
-  int left_speed = BASE_SPEED + error;
-  int right_speed = BASE_SPEED - error;
+void turnMotors(float steering_offset) {
+  int left_speed = BASE_SPEED + steering_offset;
+  int right_speed = BASE_SPEED - steering_offset;
   
   left_speed = constrain(left_speed, -255, 255);
   right_speed = constrain(right_speed, -255, 255);
   
-  // Left motor forward
   if (left_speed >= 0) {
-    Serial.printf("Left motor forward\n");
     digitalWrite(IN1, HIGH);
-    digitalWrite(IN2, LOW);
-    delay(100);
-    
-    // Left motor backward
+    ledcWrite(leftChannel, left_speed);
   } else {
-    Serial.printf("Left motor backward\n");
     digitalWrite(IN1, LOW);
-    digitalWrite(IN2, HIGH);
-    delay(100);
-    
+    ledcWrite(leftChannel, abs(left_speed));
   }
   
-  // Right motor forward
   if (right_speed >= 0) {
-    Serial.printf("right motor forward\n");
     digitalWrite(IN3, HIGH);
-    digitalWrite(IN4, LOW);
-    delay(100);
-    
-    // Right motor backward
+    ledcWrite(rightChannel, right_speed);
   } else {
-    Serial.printf("right motor backward\n");
     digitalWrite(IN3, LOW);
-    digitalWrite(IN4, HIGH);
-    delay(100);
-  
+    ledcWrite(rightChannel, abs(right_speed));
   }
-
-  delay(500);
 }
 
-
-// Breaks
 void stopMotors() {
-
+  ledcWrite(leftChannel, 0);
+  ledcWrite(rightChannel, 0);
   digitalWrite(IN1, LOW);
-  digitalWrite(IN2, LOW);
   digitalWrite(IN3, LOW);
-  digitalWrite(IN4, LOW);
 }
