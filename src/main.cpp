@@ -3,7 +3,7 @@
 
 using eloq::camera;
 
-// Safe Pin Map
+// Pin definitions.
 #define IN1 2   // Left Motor Direction
 #define IN2 12  // Left Motor Speed (PWM Channel 0)
 #define IN3 32  // Right Motor Direction
@@ -20,30 +20,36 @@ int threshold = 120;
 int trigger_count = 3;     
 bool wasAllActive = false;
 
-// STEP-AND-SCAN TUNING PARAMETERS
-int BASE_SPEED = 110;       // Speed needs to be high enough to overcome friction instantly
-int STEP_DURATION = 100;     // How many milliseconds to pulse the motors (Lower = smaller steps)
-int SETTLE_DELAY = 20;      // How many milliseconds to sit still and wait for a clean screen reading
+// Step-and-scan tuning parameters.
+int BASE_SPEED = 110;
+int STEP_DURATION = 100;
+int SETTLE_DELAY = 10;
 
-float lastError = 0;
+// State Variables
+float prevError = 0;
 int stopCount = 0;
+bool isRunning = false; // Starts paused until you press Spacebar
 
+// Function declarations
 void turnMotors(float steering_offset);
 void stopMotors();
+void checkSerialCommands();
 
 void setup() {
   Serial.begin(115200);
   delay(2000);
   Serial.println("\n--- Starting ESP32-CAM Step-and-Scan Follower ---");
+  Serial.println(">>> PRESS SPACEBAR IN SERIAL MONITOR TO START/STOP <<<");
 
   camera.pinout.wrover();
   camera.brownout.disable();
-  camera.resolution.qqvga(); 
+  camera.resolution.qqvga(); // 160x120 pixels
   camera.pixformat.grayscale();
   
   pinMode(IN1, OUTPUT);
   pinMode(IN3, OUTPUT);
   
+  // Defining pins IN2 and IN4 as PWM pins so that we can control the speed of the motors.
   ledcSetup(leftChannel, 5000, 8);
   ledcSetup(rightChannel, 5000, 8);
   ledcAttachPin(IN2, leftChannel);
@@ -63,21 +69,35 @@ void setup() {
 }
 
 void loop() {
+  // Listen for Spacebar taps at the very beginning of every loop execution
+  checkSerialCommands();
 
-  // 1. CHASSIS IS ISOLATED/STATIONARY -> Capture a crisp frame
+  // If the robot is paused, lock the motors up and skip everything else
+  if (!isRunning) {
+    stopMotors();
+    delay(50); 
+    return;
+  }
+
+  // Check if camera is capturing frame.
   if (!camera.capture().isOk()) {
     Serial.println("Failed to Capture Frame.");
     return; 
   }
   
+  // Get frame from camera and store it in an array.
   uint8_t* pixelBuffer = camera.frame->buf;
   int startIndex = targetRow * width;
 
+  // Set all sensors reading black at the start.
   int count_L3 = 0; int count_L2 = 0; int count_L1 = 0; int count_C = 0; 
   int count_R1 = 0; int count_R2 = 0; int count_R3 = 0; 
 
+  // Go through each pixel in the row and count how many black pixels are detected.
   for (int x = 0; x < width; x++) {
     uint8_t pixelValue = pixelBuffer[startIndex + x];
+
+    // If black pixel is detected, increase count of the dedicated zone
     if (pixelValue < threshold) {
       if (x < 23)            count_L3++;
       else if (x < 46)       count_L2++;
@@ -89,6 +109,7 @@ void loop() {
     }
   }
 
+  // If no. of black pixels for a certain sensor were greater than trigger value, mark that spot as black
   bool L3 = (count_L3 > trigger_count);
   bool L2 = (count_L2 > trigger_count);
   bool L1 = (count_L1 > trigger_count);
@@ -109,21 +130,30 @@ void loop() {
   else {
     wasAllActive = false; 
 
-    if (C && L1 && R1)       steering_offset = 0; 
+    if (C && L1 && R1)        steering_offset = 0; 
     else if (C && !L1 && !R1) steering_offset = 0;    
     else if (L1 && !R1)       steering_offset = -20;  
     else if (R1 && !L1)       steering_offset = 20;   
     else if (L2)              steering_offset = -50;  
     else if (R2)              steering_offset = 50;   
-    else if (L3)              steering_offset = -95;  // Strong turn if off track
+    else if (L3)              steering_offset = -95;
     else if (R3)              steering_offset = 95;   
-    else if (!L3 && !L2 && !L1 && !C && !R1 && !R2 && !R3) {
-      steering_offset = (lastError > 0) ? 95 : -95; // Search back if line is completely gone
+
+    else if (!L3 && !L2 && !L1 && !C && !R1 && !R2 && !R3) {  // All sensors detect white (line lost)
+      if (abs(prevError) < 40) {  // Likely driving through a track gap
+        steering_offset = 0;
+      } else {  // Fell off an extreme curve corner
+        if (prevError > 0) {
+          steering_offset = 95; 
+        } else {
+          steering_offset = -95;   
+        }
+      }
     }
   }
 
-  if (L3 || L2 || L1 || R1 || R2 || R3) {
-    lastError = steering_offset;
+  if ((L1 || C || R1) && !(L3 && R3)) {
+    prevError = steering_offset;
   }
 
   if (stopCount >= 6) { 
@@ -131,19 +161,37 @@ void loop() {
     while(1); 
   } 
 
+  // Logging results on Serial monitor.
   Serial.printf("[ %d | %d | %d | %d | %d | %d | %d ] -> Steer: %.0f\n", L3, L2, L1, C, R1, R2, R3, steering_offset);
 
-  // 2. PULSE THE MOTORS
+  // Turn the motors according to the visual matrix mapping
   turnMotors(steering_offset);
-  delay(STEP_DURATION); // Let motors run for exactly this many milliseconds
+  delay(STEP_DURATION);
   
-  // 3. FORCE ACTIVE BRAKING IMMEDIATELY
+  // Stop the motors briefly so that the chassis can settle for a clean visual frame
   stopMotors();
-  
-  // 4. SETTLE TIME FOR THE CAMERA
-  delay(SETTLE_DELAY); // Wait for physical shaking to stop before looping back
+  delay(SETTLE_DELAY);
                 
   camera.free();
+}
+
+// Scans the serial buffer for keyboard commands
+void checkSerialCommands() {
+  if (Serial.available() > 0) {
+    char incomingChar = Serial.read();
+    
+    // Check if user hit the Spacebar
+    if (incomingChar == ' ') {
+      isRunning = !isRunning; // Flip state variable
+      
+      if (isRunning) {
+        Serial.println("\n>>> STARTING MOTOR ENGINE <<<");
+      } else {
+        Serial.println("\n>>> ENGINE PAUSED - BRINGING TO AN ACTIVE STOP <<<");
+        stopMotors();
+      }
+    }
+  }
 }
 
 void turnMotors(float steering_offset) {
@@ -170,11 +218,10 @@ void turnMotors(float steering_offset) {
   }
 }
 
-// Rewritten to act as an active electronic brake
+// Active electronic brake
 void stopMotors() {
   ledcWrite(leftChannel, 0);
   ledcWrite(rightChannel, 0);
-  // Shorting the direction pins to ground forces the H-Bridge to actively stop the motor coils
   digitalWrite(IN1, LOW);
   digitalWrite(IN3, LOW);
 }
